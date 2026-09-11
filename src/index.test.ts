@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { discoverCatalog } from "./index.js"
+import plugin, { discoverCatalog, parseCachedCatalog } from "./index.js"
 
 const originalFetch = globalThis.fetch
 
@@ -489,5 +489,189 @@ describe("discoverCatalog", () => {
       id: "series/hy3",
       upstreamID: "opencode-go/series/hy3",
     })
+  })
+})
+
+describe("parseCachedCatalog", () => {
+  const validProvider = {
+    providerID: "cliproxyapi",
+    providerName: "CLIProxyAPI",
+    package: "aisdk:@ai-sdk/openai-compatible",
+    baseURL: "http://cliproxy.test:8317/v1",
+    apiKey: "secret",
+    models: [
+      {
+        id: "chat-model",
+        upstreamID: "chat-model",
+        name: "Chat Model",
+        tools: true,
+        input: ["text"],
+        output: ["text"],
+        limit: { context: 128_000, output: 8_192 },
+        variants: [],
+      },
+    ],
+  }
+
+  test("returns the stored providers when the cache entry is well-formed", () => {
+    const restored = parseCachedCatalog({ providers: [validProvider] })
+
+    expect(restored).toEqual([validProvider])
+  })
+
+  test("returns an empty catalog when the cache entry is missing or malformed", () => {
+    expect(parseCachedCatalog(undefined)).toEqual([])
+    expect(parseCachedCatalog(null)).toEqual([])
+    expect(parseCachedCatalog({})).toEqual([])
+    expect(parseCachedCatalog({ providers: "chat-model" })).toEqual([])
+    expect(parseCachedCatalog({ providers: [{ baseURL: "http://x" }] })).toEqual([])
+  })
+
+  test("drops malformed entries and providers without usable models", () => {
+    const restored = parseCachedCatalog({
+      providers: [
+        validProvider,
+        { providerID: "broken", models: [{ nope: true }] },
+        { providerID: "empty", models: [] },
+      ],
+    })
+
+    expect(restored).toEqual([validProvider])
+  })
+})
+
+describe("plugin setup (stale-while-revalidate)", () => {
+  const TEMPLATE = {
+    slug: "gpt-5.5",
+    apply_patch_tool_type: "freeform",
+    supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }, { effort: "high" }, { effort: "xhigh" }],
+  }
+  const KIMI = (levels: string[]) => ({
+    slug: "kimi-k3",
+    supported_reasoning_levels: levels.map((effort) => ({ effort })),
+  })
+
+  /** Serves a one-model catalog; `thinking` controls the Codex client response. */
+  function serve(thinking: () => Response) {
+    return stubFetch((url) => {
+      if (url === "https://models.dev/api.json") return Response.json({})
+      if (url.includes("client_version=1")) return thinking()
+      return Response.json({ data: [{ id: "kimi-k3" }] })
+    })
+  }
+
+  /** Minimal OpenCode context recording what the plugin writes into the draft. */
+  function makeCtx(cache?: unknown) {
+    const storage = new Map<string, unknown>()
+    if (cache !== undefined) storage.set("catalog", cache)
+
+    let replay: ((draft: any) => void) | undefined
+    let observed: Record<string, string[]> = {}
+
+    const apply = (cb: (draft: any) => void) => {
+      observed = {}
+      cb({
+        provider: {
+          list: () => [],
+          get: () => undefined,
+          remove: () => {},
+          update: (_id: string, update: (p: any) => void) => update({ settings: {} }),
+        },
+        model: {
+          get: () => undefined,
+          remove: () => {},
+          default: { get: () => undefined, set: () => {} },
+          update: (providerID: string, modelID: string, update: (m: any) => void) => {
+            const model: any = { capabilities: {}, limit: {} }
+            update(model)
+            observed[`${providerID}/${modelID}`] = Array.isArray(model.variants)
+              ? model.variants.map((v: any) => v.id)
+              : []
+          },
+        },
+      })
+    }
+
+    const ctx: any = {
+      options: {
+        baseURL: "http://cliproxy.test:8317",
+        apiKey: "super-secret-key",
+        groupByPrefix: false,
+        refreshMs: 0,
+      },
+      integration: {
+        transform: async (cb: (d: any) => void) =>
+          cb({ update: (_id: string, u: (i: any) => void) => u({}), method: { update: () => {} } }),
+        connection: { active: async () => undefined, resolve: async () => undefined },
+      },
+      storage: {
+        get: async (k: string) => storage.get(k),
+        set: async (k: string, v: unknown) => void storage.set(k, v),
+      },
+      catalog: {
+        transform: async (cb: any) => {
+          replay = cb
+          apply(cb)
+        },
+        reload: async () => void (replay && apply(replay)),
+      },
+    }
+
+    return { ctx, storage, variants: () => observed }
+  }
+
+  async function run(thinking: () => Response, cache?: unknown) {
+    serve(thinking)
+    const harness = makeCtx(cache)
+    const cleanup = await plugin.setup(harness.ctx)
+    // setup() revalidates fire-and-forget; let it settle.
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 5))
+    if (typeof cleanup === "function") await cleanup()
+    return harness
+  }
+
+  const healthy = () => Response.json({ models: [TEMPLATE, KIMI(["low", "high"])] })
+
+  test("discovers reasoning variants on a healthy server", async () => {
+    const h = await run(healthy)
+    expect(h.variants()["cliproxyapi/kimi-k3"]).toEqual(["low", "high"])
+  })
+
+  test("keeps cached variants when the thinking catalog request fails", async () => {
+    const warm = (await run(healthy)).storage.get("catalog")
+
+    const h = await run(() => new Response("boom", { status: 500 }), warm)
+
+    expect(h.variants()["cliproxyapi/kimi-k3"]).toEqual(["low", "high"])
+    expect(JSON.stringify(h.storage.get("catalog"))).toContain('"low"')
+  })
+
+  test("keeps cached variants when the thinking catalog omits a known model", async () => {
+    const warm = (await run(healthy)).storage.get("catalog")
+
+    // HTTP 200, but the model is briefly missing from the list.
+    const h = await run(() => Response.json({ models: [TEMPLATE] }), warm)
+
+    expect(h.variants()["cliproxyapi/kimi-k3"]).toEqual(["low", "high"])
+  })
+
+  test("still applies genuine changes to a model's reasoning levels", async () => {
+    const warm = (await run(healthy)).storage.get("catalog")
+
+    const h = await run(() => Response.json({ models: [TEMPLATE, KIMI(["low", "medium", "max"])] }), warm)
+
+    expect(h.variants()["cliproxyapi/kimi-k3"]).toEqual(["low", "medium", "max"])
+  })
+
+  test("still registers models when the server has no Codex catalog", async () => {
+    const h = await run(() => new Response("not found", { status: 404 }))
+
+    expect(h.variants()["cliproxyapi/kimi-k3"]).toEqual([])
+  })
+
+  test("never writes the API key into the catalog cache", async () => {
+    const h = await run(healthy)
+
+    expect(JSON.stringify(h.storage.get("catalog"))).not.toContain("super-secret-key")
   })
 })

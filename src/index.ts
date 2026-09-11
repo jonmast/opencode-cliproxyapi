@@ -20,8 +20,13 @@ const DEFAULT_PROVIDER_ID = "cliproxyapi"
 const INTEGRATION_ID = "cliproxyapi"
 const DEFAULT_PROVIDER_NAME = "CLIProxyAPI"
 const DEFAULT_DISCOVERY_TIMEOUT_MS = 10_000
+/** How often the cached catalog is revalidated in the background. */
+const DEFAULT_REFRESH_MS = 300_000
 const DEFAULT_MODEL_METADATA_URL = "https://models.dev/api.json"
 const ANTHROPIC_NPM = "@ai-sdk/anthropic"
+
+/** Plugin storage key holding the last successfully discovered catalog. */
+const CATALOG_CACHE_KEY = "catalog"
 
 /**
  * Field CLIProxyAPI streams reasoning text in when it speaks the OpenAI chat
@@ -44,6 +49,11 @@ export type ConnectorOptions = {
   protocol?: "chat" | "responses"
   modelMetadataURL?: string | false
   discoveryTimeoutMs?: number
+  /**
+   * Interval in milliseconds between background revalidations of the cached
+   * catalog. `0` disables polling; startup revalidation always runs.
+   */
+  refreshMs?: number
   /** Split models into one provider per id prefix (the part before `/`). */
   groupByPrefix?: boolean
   /** Expose each model's reasoning levels as selectable variants. */
@@ -114,14 +124,15 @@ export default Plugin.define({
       })
     })
 
-    const options = { ...configured, ...(await readCredential(ctx, configured)) }
-
-    // A missing or unreachable server must not take the plugin down with it,
-    // otherwise the integration disappears and the key can never be entered.
-    const catalog = await discoverCatalog(options).catch(() => [] as DiscoveredProvider[])
+    // Stale-while-revalidate: serve the last discovered catalog immediately so
+    // the model picker is populated without waiting on the network, then
+    // refresh in the background and replay the transform when it changes.
+    // A cold start with no cache behaves as before, just without blocking
+    // setup on discovery.
+    let providers = parseCachedCatalog(await ctx.storage.get(CATALOG_CACHE_KEY))
 
     await ctx.catalog.transform((draft) => {
-      for (const provider of catalog) {
+      for (const provider of providers) {
 
         draft.provider.update(provider.providerID, (p) => {
           p.name = provider.providerName
@@ -164,8 +175,107 @@ export default Plugin.define({
         }
       }
     })
+
+    // oc-go-backed models are rejected unless the request carries the calling
+    // session's id. It changes per request, so a static `p.settings` header
+    // cannot supply it — only a per-request hook can. The hook closes over
+    // `providers`, so a background revalidation that adds providers is covered
+    // without re-registering.
+    // One revalidation at a time: a slow poll must not stack behind a hung
+    // server, or each interval adds another request to the pile.
+    let inFlight = false
+    const revalidate = async () => {
+      if (inFlight) return
+      inFlight = true
+      try {
+        await doRevalidate()
+      } finally {
+        inFlight = false
+      }
+    }
+
+    const doRevalidate = async () => {
+      // A missing or unreachable server must not take the plugin down with it,
+      // otherwise the integration disappears and the key can never be entered.
+      const options = { ...configured, ...(await readCredential(ctx, configured)) }
+      const fresh = await discoverCatalog(options).catch(() => undefined)
+      if (!fresh || fresh.length === 0) {
+        // Discovery failed or found nothing: keep serving the cached catalog.
+        return
+      }
+
+      const merged = preserveVariants(fresh, providers)
+      const unchanged = JSON.stringify(merged) === JSON.stringify(providers)
+      if (unchanged) {
+        // Persist anyway so a failed earlier write recovers on the next run.
+        await saveCacheIn(ctx, merged)
+        return
+      }
+
+      providers = merged
+      await saveCacheIn(ctx, merged)
+      // Reload replays the registered transform against the updated capture.
+      await ctx.catalog.reload()
+    }
+
+    // Fire and forget: setup must finish without waiting on the network, and a
+    // failed revalidation just leaves the cached catalog in place.
+    void revalidate().catch(() => {})
+
+    const refreshMs = configured.refreshMs ?? DEFAULT_REFRESH_MS
+    if (refreshMs === 0) return
+
+    const timer = setInterval(() => void revalidate().catch(() => {}), refreshMs)
+    return () => clearInterval(timer)
   },
 })
+
+/**
+ * Round-trips through JSON so the value always satisfies storage's Json type.
+ * The API key is stripped first: the credential belongs to the integration, and
+ * caching a copy would write it to plugin storage in plaintext. Providers
+ * restored from cache rely on `integrationID` until the next revalidation
+ * resolves the key again.
+ */
+function saveCacheIn(ctx: Plugin.Context, providers: DiscoveredProvider[]) {
+  const withoutKeys = providers.map(({ apiKey: _apiKey, ...provider }) => provider)
+  return ctx.storage
+    .set(CATALOG_CACHE_KEY, JSON.parse(JSON.stringify({ providers: withoutKeys })))
+    .catch(() => {})
+}
+
+/**
+ * Carries variants forward for any model a revalidation reports none for but
+ * that already had some.
+ *
+ * CLIProxyAPI's reasoning-level endpoint can fail outright or briefly serve an
+ * incomplete model list, and both are indistinguishable from "this model has no
+ * reasoning levels". Committing that reading strips variants from the picker
+ * and overwrites the cache with the loss, so it survives a restart until a
+ * healthy poll happens to repair it. Genuine level changes still apply; the
+ * cost is that a real removal needs the cache to be cleared.
+ */
+function preserveVariants(
+  fresh: DiscoveredProvider[],
+  previous: DiscoveredProvider[],
+): DiscoveredProvider[] {
+  const known = new Map<string, ModelVariant[]>()
+  for (const provider of previous) {
+    for (const model of provider.models) {
+      if (model.variants?.length) known.set(`${provider.providerID}/${model.id}`, model.variants)
+    }
+  }
+  if (known.size === 0) return fresh
+
+  return fresh.map((provider) => ({
+    ...provider,
+    models: provider.models.map((model) => {
+      if (model.variants.length > 0) return model
+      const kept = known.get(`${provider.providerID}/${model.id}`)
+      return kept ? { ...model, variants: kept } : model
+    }),
+  }))
+}
 
 export {
   discoverModelProtocols,
@@ -425,6 +535,34 @@ async function discoverThinking(input: {
 }
 
 /**
+ * Restores the last successfully discovered catalog from plugin storage so a
+ * cold start can register models before any network round-trip. Malformed or
+ * pre-grouping cache entries are dropped rather than trusted: a missing cache
+ * only costs the one-time discovery wait, while a corrupt one would register
+ * broken providers.
+ */
+export function parseCachedCatalog(input: unknown): DiscoveredProvider[] {
+  const cached = input as { providers?: unknown } | undefined
+  if (!cached || !Array.isArray(cached.providers)) return []
+
+  return cached.providers.flatMap((provider) => {
+    if (
+      typeof provider !== "object" ||
+      provider === null ||
+      typeof (provider as DiscoveredProvider).providerID !== "string" ||
+      !Array.isArray((provider as DiscoveredProvider).models)
+    ) {
+      return []
+    }
+    const entry = provider as DiscoveredProvider
+    const models = entry.models.filter(
+      (model) => typeof model === "object" && model !== null && typeof model.id === "string",
+    )
+    return models.length > 0 ? [{ ...entry, models }] : []
+  })
+}
+
+/**
  * Reads connection settings from the credential OpenCode holds for the
  * integration. Explicit plugin options still win, so an existing config-driven
  * setup keeps working untouched; the credential only fills the gaps.
@@ -472,6 +610,7 @@ function readOptions(input?: Record<string, unknown>): ConnectorOptions {
       typeof input.discoveryTimeoutMs === "number" && input.discoveryTimeoutMs > 0
         ? input.discoveryTimeoutMs
         : undefined,
+    refreshMs: typeof input.refreshMs === "number" && input.refreshMs >= 0 ? input.refreshMs : undefined,
   }
 }
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "name": "opencode-cliproxyapi",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Discover and use every model exposed by CLIProxyAPI in OpenCode.",
   "type": "module",
   "license": "MIT",
@@ -23,6 +23,7 @@
     }
   },
   "files": [
+    "index.js",
     "dist",
     "README.md",
     "CHANGELOG.md",

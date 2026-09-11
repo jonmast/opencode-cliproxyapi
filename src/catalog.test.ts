@@ -187,9 +187,21 @@ describe("discoverThinkingLevels", () => {
       discoverThinkingLevels({
         baseURL: "http://cliproxy.test/v1",
         timeoutMs: 1_000,
-        fetcher: async () => new Response("nope", { status: 404 }),
+        fetcher: async () => new Response("nope", { status: 500 }),
       }),
-    ).rejects.toThrow("HTTP 404: nope")
+    ).rejects.toThrow("HTTP 500: nope")
+  })
+
+  // A server without the endpoint has no levels to report, which must stay
+  // distinguishable from a server whose endpoint is broken.
+  test("treats a missing Codex catalog as an empty answer, not a failure", async () => {
+    await expect(
+      discoverThinkingLevels({
+        baseURL: "http://cliproxy.test/v1",
+        timeoutMs: 1_000,
+        fetcher: async () => new Response("not found", { status: 404 }),
+      }),
+    ).resolves.toEqual({})
   })
 })
 

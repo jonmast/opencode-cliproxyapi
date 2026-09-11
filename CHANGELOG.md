@@ -5,9 +5,34 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.0] - 2026-09-11
 
 ### Changed
+
+- Model discovery now uses stale-while-revalidate: on startup the plugin
+  registers the last discovered catalog immediately from its cache and
+  refreshes it in the background, replaying the catalog transform only when the
+  server's catalog changed. Cold starts no longer block the model picker on
+  network discovery; the first-ever run simply populates the picker when
+  discovery completes.
+- The cached catalog is also revalidated on an interval, default every five
+  minutes, so long-running sessions pick up server-side model changes. Set
+  `"refreshMs": 0` to revalidate only at startup; concurrent polls are
+  coalesced, so a slow discovery never stacks requests.
+- A revalidation can no longer strip a model's reasoning variants. CLIProxyAPI's
+  reasoning-level endpoint can fail outright or briefly serve an incomplete
+  model list, and both read as "this model has no levels"; committing that
+  reading removed variants from the picker and cached the loss, so it survived a
+  restart. The previous catalog's variants are now carried forward instead.
+  Genuine level changes still apply; a real removal needs the cache cleared.
+- A missing Codex client catalog (`404`) is now treated as a genuine empty
+  answer rather than an error, keeping it distinguishable from an endpoint that
+  is merely broken.
+- The cached catalog no longer stores the API key. Providers restored from cache
+  authenticate through the integration until the next revalidation resolves the
+  credential again.
+- The npm package now ships the root `index.js` entrypoint wrapper required by
+  OpenCode 2's plugin directory scan.
 
 - **Breaking:** Migrated to the OpenCode 2 plugin API. This release requires
   OpenCode 2 (`opencode2`) and no longer works with OpenCode 1. Use the
@@ -69,7 +94,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Automatic model names and capability hints in OpenCode's model picker.
 - Local plugin and npm package installation flows.
 
-[Unreleased]: https://github.com/yourcasualdev/opencode-cliproxyapi/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/yourcasualdev/opencode-cliproxyapi/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/yourcasualdev/opencode-cliproxyapi/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/yourcasualdev/opencode-cliproxyapi/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/yourcasualdev/opencode-cliproxyapi/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/yourcasualdev/opencode-cliproxyapi/releases/tag/v0.1.0

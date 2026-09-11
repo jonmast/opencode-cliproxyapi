@@ -149,6 +149,11 @@ export async function discoverThinkingLevels(input: {
     signal: AbortSignal.timeout(input.timeoutMs),
   })
 
+  // Servers predating the Codex client catalog have no reasoning levels to
+  // report, which is an answer rather than a failure. Every other bad status is
+  // a failure, and must stay distinguishable from "this model has no levels".
+  if (response.status === 404) return {}
+
   if (!response.ok) {
     const detail = (await response.text()).trim().slice(0, 300)
     throw new Error(

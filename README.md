@@ -8,7 +8,10 @@ Use every model exposed by [CLIProxyAPI](https://github.com/router-for-me/CLIPro
 directly in [OpenCode](https://opencode.ai/).
 
 The plugin discovers CLIProxyAPI's live `/v1/models` catalog whenever OpenCode
-starts. Models whose ids carry a group prefix (the part before the first `/`,
+starts. The last discovered catalog is cached, so startups serve it immediately
+(stale-while-revalidate), refresh it in the background, and keep revalidating it
+on an interval (every five minutes by default), picking up any server-side
+changes without blocking the `/models` picker on the network. Models whose ids carry a group prefix (the part before the first `/`,
 e.g. `opencode-go/hy3`) are split into their own provider section in the
 `/models` picker, named like **Opencode Go (CLIProxyAPI)**, so related models
 stay grouped together. Unprefixed models remain under the default
@@ -156,6 +159,7 @@ The recommended configuration is the global plugin entry shown above:
 | `groupByPrefix` | `true` | Split models into one provider per id prefix (the part before `/`). Set to `false` to list every model under a single `providerID` provider. |
 | `protocol` | `chat` | Default protocol: `chat` uses `/chat/completions`; `responses` uses `/responses`. Models marked as Anthropic-compatible by dynamic metadata override this per model. |
 | `modelMetadataURL` | `https://models.dev/api.json` | Dynamic model metadata. Set to `false` to disable enrichment and use only the default protocol and fallback limits. |
+| `refreshMs` | `300000` | How often the cached catalog is revalidated in the background (milliseconds). Set to `0` to revalidate only at startup. |
 | `thinkingLevels` | `true` | Expose each model's reasoning levels as variants. Set to `false` to skip the extra discovery request. |
 | `discoveryTimeoutMs` | `10000` | Startup model-discovery timeout |
 
