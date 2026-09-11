@@ -33,6 +33,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
   credential again.
 - The npm package now ships the root `index.js` entrypoint wrapper required by
   OpenCode 2's plugin directory scan.
+- This fork distributes as `@jonmast/opencode-cliproxyapi` on GitHub Packages
+  (`npm.pkg.github.com`) and as a tarball attached to the GitHub release.
 
 - **Breaking:** Migrated to the OpenCode 2 plugin API. This release requires
   OpenCode 2 (`opencode2`) and no longer works with OpenCode 1. Use the
