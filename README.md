@@ -34,6 +34,19 @@ You need OpenCode 2, a running CLIProxyAPI server, and one of its API keys.
 opencode2 plugin add opencode-cliproxyapi
 ```
 
+> **This fork** publishes to GitHub Packages as
+> [`@jonmast/opencode-cliproxyapi`](https://github.com/jonmast?tab=packages).
+> To install it, first add a scope entry to `~/.npmrc`
+> ([create a token](https://github.com/settings/tokens) with `read:packages`):
+>
+> ```text
+> @jonmast:registry=https://npm.pkg.github.com
+> //npm.pkg.github.com/:_authToken=YOUR_GITHUB_TOKEN
+> ```
+>
+> then run `opencode2 plugin add @jonmast/opencode-cliproxyapi` and use
+> `"package": "@jonmast/opencode-cliproxyapi"` in the plugin entry below.
+
 ### 2. Save your connection
 
 Open your global OpenCode config:
