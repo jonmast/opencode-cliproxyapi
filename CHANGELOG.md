@@ -28,6 +28,18 @@ and this project follows [Semantic Versioning](https://semver.org/).
   background, and discovery that outlives the cap still registers when it
   lands.
 
+- A model metadata outage can no longer degrade the cached catalog. With a
+  healthy CLIProxyAPI and an unreachable models.dev, every model fell back to
+  default names, limits, modalities, and protocol, and that reading was written
+  to the cache, so the loss survived a restart until metadata happened to come
+  back. Models that metadata did not describe now keep their last enriched
+  definition, matching how reasoning variants are already preserved.
+- Discovery failures are now reported to OpenCode's logs when discovery starts
+  failing and again when it recovers. A failure is otherwise invisible by
+  design, since the cached catalog keeps serving, which left a stale catalog
+  with nothing explaining it. Only the transitions are logged, so a server that
+  stays down does not add an entry per poll.
+
 - The plugin now builds against the published `@opencode/plugin` package
   (OpenCode 2's own plugin package) instead of the `@opencode-ai/plugin`
   prerelease, so the V2 domains are properly typed.

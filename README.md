@@ -184,6 +184,31 @@ CLIProxyAPI-discovered models available with the configured default protocol.
 Models that metadata does not describe fall back to a `128000` context and
 `8192` output limit, which you can override per model (see below).
 
+### Caching and staleness
+
+The last successful discovery is cached in OpenCode's storage, which is shared
+across every project and survives restarts. The cache has no expiry: it is
+replaced only by a later successful discovery, so a stale catalog always wins
+over an empty one.
+
+That means a failure never removes models. If CLIProxyAPI is unreachable, the
+previously discovered models stay in the picker. If models.dev is unreachable
+but CLIProxyAPI is healthy, models keep the names, limits, modalities, and
+protocol they were last enriched with, rather than dropping to defaults.
+Reasoning variants are held the same way. The trade-off is that a genuine
+*removal* — a model losing a reasoning level, or metadata lowering a limit —
+only lands once the failing source is reachable again.
+
+Discovery failures are reported to OpenCode's logs on transition, once when
+discovery starts failing and once when it recovers, so a stale catalog is
+diagnosable without filling the log on every poll. To clear the cache and
+rediscover from scratch:
+
+```bash
+sqlite3 ~/.local/share/opencode/opencode.db \
+  "delete from kv where key like 'plugin:%' and key like '%:catalog'"
+```
+
 ### Optional environment variables
 
 Environment variables remain available for containers, CI, or users who prefer

@@ -93,6 +93,12 @@ export type DiscoveredModel = {
   variants: ModelVariant[]
   /** Assistant-message field carrying streamed reasoning, when non-standard. */
   reasoningField?: string
+  /**
+   * Whether model metadata described this model on the discovery that produced
+   * it. An unenriched model is carrying defaults rather than known values, so
+   * a previously enriched copy is the better answer.
+   */
+  enriched: boolean
 }
 
 export type ModelVariant = {
@@ -195,6 +201,8 @@ export default Plugin.define({
     // cannot supply it — only a per-request hook can. The hook closes over
     // `providers`, so a background revalidation that adds providers is covered
     // without re-registering.
+    const report = diagnostics()
+
     // One revalidation at a time: a slow poll must not stack behind a hung
     // server, or each interval adds another request to the pile.
     let inFlight = false
@@ -212,13 +220,18 @@ export default Plugin.define({
       // A missing or unreachable server must not take the plugin down with it,
       // otherwise the integration disappears and the key can never be entered.
       const options = { ...configured, ...(await readCredential(ctx, configured)) }
-      const fresh = await discoverCatalog(options).catch(() => undefined)
+      const fresh = await discoverCatalog(options).catch((error: unknown) => {
+        report.failed(error instanceof Error ? error.message : String(error))
+        return undefined
+      })
       if (!fresh || fresh.length === 0) {
         // Discovery failed or found nothing: keep serving the cached catalog.
+        if (fresh) report.failed("the server returned no models")
         return
       }
+      report.recovered()
 
-      const merged = preserveVariants(fresh, providers)
+      const merged = preserveVariants(preserveMetadata(fresh, providers), providers)
       const unchanged = JSON.stringify(merged) === JSON.stringify(providers)
       if (unchanged) {
         // Persist anyway so a failed earlier write recovers on the next run.
@@ -283,6 +296,45 @@ function saveCacheIn(ctx: Plugin.Context, providers: DiscoveredProvider[]) {
  * healthy poll happens to repair it. Genuine level changes still apply; the
  * cost is that a real removal needs the cache to be cleared.
  */
+/**
+ * Restores models that a metadata outage stripped back to defaults.
+ *
+ * Model metadata decides display names, real context limits, modalities, and
+ * which models are reached over the Anthropic protocol. Losing it is
+ * non-fatal by design, but the resulting catalog is strictly worse, and
+ * committing it overwrites the cache so the degraded reading survives a
+ * restart — the same failure mode variants had.
+ *
+ * The whole previous model is carried forward rather than only the
+ * metadata-derived fields, because the protocol it resolved to also decides
+ * the wire shape of its reasoning variants; mixing an Anthropic package with
+ * chat-shaped variant bodies would send levels the endpoint cannot read. The
+ * cost is that a genuine change discovered during an outage waits for
+ * metadata to come back.
+ */
+function preserveMetadata(
+  fresh: DiscoveredProvider[],
+  previous: DiscoveredProvider[],
+): DiscoveredProvider[] {
+  const known = new Map<string, DiscoveredModel>()
+  for (const provider of previous) {
+    for (const model of provider.models) {
+      if (model.enriched) known.set(`${provider.providerID}/${model.id}`, model)
+    }
+  }
+  if (known.size === 0) return fresh
+
+  return fresh.map((provider) => ({
+    ...provider,
+    models: provider.models.map((model) => {
+      if (model.enriched) return model
+      const kept = known.get(`${provider.providerID}/${model.id}`)
+      // The id and upstream id belong to the live server, not to the cache.
+      return kept ? { ...kept, id: model.id, upstreamID: model.upstreamID } : model
+    }),
+  }))
+}
+
 function preserveVariants(
   fresh: DiscoveredProvider[],
   previous: DiscoveredProvider[],
@@ -489,6 +541,7 @@ function describeModel(
     // Anthropic and Responses traffic already carries reasoning in a shape
     // OpenCode understands.
     ...(anthropic || protocol === "responses" ? {} : { reasoningField: CHAT_REASONING_FIELD }),
+    enriched: metadata !== undefined,
   }
 }
 
@@ -641,6 +694,34 @@ function readOptions(input?: Record<string, unknown>): ConnectorOptions {
     refreshMs: typeof input.refreshMs === "number" && input.refreshMs >= 0 ? input.refreshMs : undefined,
     coldWaitMs:
       typeof input.coldWaitMs === "number" && input.coldWaitMs >= 0 ? input.coldWaitMs : undefined,
+  }
+}
+
+/**
+ * Reports discovery health on transitions only.
+ *
+ * A failed discovery is invisible by design — the cached catalog keeps
+ * serving — which leaves a stale catalog with nothing explaining it. The
+ * plugin context offers no logger, so this goes to stderr, where OpenCode's
+ * own logs are. Reporting every attempt would fill the log with one entry per
+ * poll for as long as a server stays down, so only the healthy/failing edges
+ * are worth an entry.
+ */
+function diagnostics() {
+  let failing = false
+  return {
+    failed: (detail: string) => {
+      if (failing) return
+      failing = true
+      console.warn(
+        `[opencode-cliproxyapi] model discovery failed, serving the cached catalog: ${detail}`,
+      )
+    },
+    recovered: () => {
+      if (!failing) return
+      failing = false
+      console.warn("[opencode-cliproxyapi] model discovery recovered")
+    },
   }
 }
 

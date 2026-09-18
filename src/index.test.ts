@@ -57,6 +57,7 @@ describe("discoverCatalog", () => {
         limit: { context: 128_000, output: 8_192 },
         variants: [],
         reasoningField: "reasoning_content",
+        enriched: false,
       },
       {
         id: "gemini-3.1-flash-image",
@@ -68,6 +69,7 @@ describe("discoverCatalog", () => {
         limit: { context: 128_000, output: 8_192 },
         variants: [],
         reasoningField: "reasoning_content",
+        enriched: false,
       },
     ])
   })
@@ -151,6 +153,7 @@ describe("discoverCatalog", () => {
       limit: { context: 1_000_000, output: 64_000 },
       variants: [],
       reasoningField: "reasoning_content",
+      enriched: true,
     })
   })
 
@@ -251,8 +254,8 @@ describe("discoverCatalog", () => {
     const go = provider(catalog, "cliproxyapi-opencode-go")!
     expect(go.providerName).toBe("Opencode Go (CLIProxyAPI)")
     expect(go.models).toEqual([
-      { id: "hy3", upstreamID: "opencode-go/hy3", name: "Hy3", tools: true, input: ["text"], output: ["text"], limit: { context: 128_000, output: 8_192 }, variants: [], reasoningField: "reasoning_content" },
-      { id: "hy4", upstreamID: "opencode-go/hy4", name: "Hy4", tools: true, input: ["text"], output: ["text"], limit: { context: 128_000, output: 8_192 }, variants: [], reasoningField: "reasoning_content" },
+      { id: "hy3", upstreamID: "opencode-go/hy3", name: "Hy3", tools: true, input: ["text"], output: ["text"], limit: { context: 128_000, output: 8_192 }, variants: [], reasoningField: "reasoning_content", enriched: false },
+      { id: "hy4", upstreamID: "opencode-go/hy4", name: "Hy4", tools: true, input: ["text"], output: ["text"], limit: { context: 128_000, output: 8_192 }, variants: [], reasoningField: "reasoning_content", enriched: false },
     ])
 
     const anthropic = provider(catalog, "cliproxyapi-anthropic")!
@@ -620,6 +623,11 @@ describe("plugin setup (stale-while-revalidate)", () => {
 
   async function run(thinking: () => Response, cache?: unknown) {
     serve(thinking)
+    return runRaw(cache)
+  }
+
+  /** `run` without installing a fetch stub, for tests that supply their own. */
+  async function runRaw(cache?: unknown) {
     const harness = makeCtx(cache)
     const cleanup = await plugin.setup(harness.ctx)
     // setup() revalidates fire-and-forget; let it settle.
@@ -699,6 +707,38 @@ describe("plugin setup (stale-while-revalidate)", () => {
 
     expect(Date.now() - started).toBeLessThan(1_000)
     expect(h.variants()["cliproxyapi/kimi-k3"]).toEqual(["low", "high"])
+  })
+
+  test("keeps enriched metadata when models.dev is unavailable", async () => {
+    // A healthy proxy plus unreachable metadata used to overwrite the cache
+    // with default limits and names, and the loss survived a restart.
+    const metadata = {
+      openai: {
+        npm: "@ai-sdk/openai-compatible",
+        models: { "kimi-k3": { name: "Kimi K3", limit: { context: 999_000, output: 64_000 } } },
+      },
+    }
+    const enriched = () =>
+      stubFetch((url) => {
+        if (url === "https://models.dev/api.json") return Response.json(metadata)
+        if (url.includes("client_version=1")) return healthy()
+        return Response.json({ data: [{ id: "kimi-k3", owned_by: "openai" }] })
+      })
+
+    enriched()
+    const warm = (await runRaw()).storage.get("catalog")
+
+    // models.dev now fails; the proxy keeps serving the same model.
+    stubFetch((url) => {
+      if (url === "https://models.dev/api.json") return new Response("nope", { status: 503 })
+      if (url.includes("client_version=1")) return healthy()
+      return Response.json({ data: [{ id: "kimi-k3", owned_by: "openai" }] })
+    })
+    const h = await runRaw(warm)
+
+    const cached = JSON.stringify(h.storage.get("catalog"))
+    expect(cached).toContain("Kimi K3")
+    expect(cached).toContain("999000")
   })
 
   test("never writes the API key into the catalog cache", async () => {
