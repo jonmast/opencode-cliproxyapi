@@ -571,16 +571,14 @@ describe("plugin setup (stale-while-revalidate)", () => {
     const apply = (cb: (draft: any) => void) => {
       observed = {}
       cb({
-        provider: {
-          list: () => [],
-          get: () => undefined,
+        list: () => [],
+        get: () => undefined,
+        add: () => {},
+        remove: () => {},
+        update: (_id: string, update: (p: any) => void) => update({ settings: {} }),
+        models: {
+          set: () => {},
           remove: () => {},
-          update: (_id: string, update: (p: any) => void) => update({ settings: {} }),
-        },
-        model: {
-          get: () => undefined,
-          remove: () => {},
-          default: { get: () => undefined, set: () => {} },
           update: (providerID: string, modelID: string, update: (m: any) => void) => {
             const model: any = { capabilities: {}, limit: {} }
             update(model)
@@ -608,7 +606,7 @@ describe("plugin setup (stale-while-revalidate)", () => {
         get: async (k: string) => storage.get(k),
         set: async (k: string, v: unknown) => void storage.set(k, v),
       },
-      catalog: {
+      provider: {
         transform: async (cb: any) => {
           replay = cb
           apply(cb)

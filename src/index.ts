@@ -1,4 +1,4 @@
-import { Plugin } from "@opencode-ai/plugin"
+import { Plugin } from "@opencode/plugin"
 import {
   discoverModelProtocols,
   discoverModels,
@@ -131,10 +131,13 @@ export default Plugin.define({
     // setup on discovery.
     let providers = parseCachedCatalog(await ctx.storage.get(CATALOG_CACHE_KEY))
 
-    await ctx.catalog.transform((draft) => {
+    // Provider transforms own provider settings and their model definitions.
+    // `ctx.model` edits the already-resolved candidate set instead, which
+    // cannot introduce a provider, so registration belongs here.
+    await ctx.provider.transform((draft) => {
       for (const provider of providers) {
 
-        draft.provider.update(provider.providerID, (p) => {
+        draft.update(provider.providerID, (p) => {
           p.name = provider.providerName
           p.package = provider.package
           // Point at the integration so OpenCode surfaces this provider under
@@ -148,7 +151,7 @@ export default Plugin.define({
         })
 
         for (const model of provider.models) {
-          draft.model.update(provider.providerID, model.id, (draftModel) => {
+          draft.models.update(provider.providerID, model.id, (draftModel) => {
             // The catalog key is the group-stripped id, so the full CLIProxyAPI
             // id must be sent upstream via modelID to keep routing intact.
             draftModel.modelID = model.upstreamID as unknown as typeof draftModel.modelID
@@ -215,7 +218,7 @@ export default Plugin.define({
       providers = merged
       await saveCacheIn(ctx, merged)
       // Reload replays the registered transform against the updated capture.
-      await ctx.catalog.reload()
+      await ctx.provider.reload()
     }
 
     // Fire and forget: setup must finish without waiting on the network, and a

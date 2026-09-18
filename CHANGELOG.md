@@ -5,6 +5,22 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-09-18
+
+### Changed
+
+- **Breaking:** Migrated to the provider/model registries OpenCode 2.0.4
+  introduced in [#48901](https://github.com/sst/opencode/pull/48901), which
+  removed the `catalog` plugin domain. Provider and model registration now runs
+  through `ctx.provider.transform`, and revalidation reloads via
+  `ctx.provider.reload()`. This release requires OpenCode 2.0.4 or newer; on
+  2.0.0–2.0.3 it fails to load with
+  `undefined is not an object (evaluating 'ctx.provider.transform')`. Stay on
+  `0.2.x` for those versions.
+- The plugin now builds against the published `@opencode/plugin` package
+  (OpenCode 2's own plugin package) instead of the `@opencode-ai/plugin`
+  prerelease, so the V2 domains are properly typed.
+
 ## [0.2.0] - 2026-09-11
 
 ### Changed

@@ -21,12 +21,14 @@ automatically routed through the Anthropic SDK using live model metadata from
 display names, and modalities. The remaining discovered models continue to use
 the provider's configured default protocol. No model IDs are hard-coded.
 
-> **Requires OpenCode 2.** This version targets the V2 plugin API and runs on
-> the `opencode2` binary. For OpenCode 1, use `opencode-cliproxyapi@0.1.x`.
+> **Requires OpenCode 2.0.4 or newer.** This version targets the split
+> provider/model plugin registries introduced in 2.0.4 and runs on the
+> `opencode2` binary. For OpenCode 2.0.0–2.0.3, use `0.2.x`; for OpenCode 1, use
+> `opencode-cliproxyapi@0.1.x`.
 
 ## Quick start
 
-You need OpenCode 2, a running CLIProxyAPI server, and one of its API keys.
+You need OpenCode 2.0.4+, a running CLIProxyAPI server, and one of its API keys.
 
 ### 1. Install
 
