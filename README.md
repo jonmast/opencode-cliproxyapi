@@ -176,6 +176,7 @@ The recommended configuration is the global plugin entry shown above:
 | `modelMetadataURL` | `https://models.dev/api.json` | Dynamic model metadata. Set to `false` to disable enrichment and use only the default protocol and fallback limits. |
 | `refreshMs` | `300000` | How often the cached catalog is revalidated in the background (milliseconds). Set to `0` to revalidate only at startup. |
 | `thinkingLevels` | `true` | Expose each model's reasoning levels as variants. Set to `false` to skip the extra discovery request. |
+| `coldWaitMs` | `3000` | How long a startup with no cached catalog waits for the first discovery before handing control back to OpenCode (milliseconds). Set to `0` to never wait. |
 | `discoveryTimeoutMs` | `10000` | Startup model-discovery timeout |
 
 If model metadata cannot be reached, the plugin keeps the

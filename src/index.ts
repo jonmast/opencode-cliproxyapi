@@ -22,6 +22,12 @@ const DEFAULT_PROVIDER_NAME = "CLIProxyAPI"
 const DEFAULT_DISCOVERY_TIMEOUT_MS = 10_000
 /** How often the cached catalog is revalidated in the background. */
 const DEFAULT_REFRESH_MS = 300_000
+/**
+ * How long a cache-less startup waits for the first discovery before handing
+ * control back to OpenCode. Long enough for a healthy local server, short
+ * enough that an unreachable one is not felt as a hang.
+ */
+const DEFAULT_COLD_WAIT_MS = 3_000
 const DEFAULT_MODEL_METADATA_URL = "https://models.dev/api.json"
 const ANTHROPIC_NPM = "@ai-sdk/anthropic"
 
@@ -54,6 +60,11 @@ export type ConnectorOptions = {
    * catalog. `0` disables polling; startup revalidation always runs.
    */
   refreshMs?: number
+  /**
+   * How long a startup with no cached catalog waits for the first discovery
+   * before returning. `0` never waits, restoring fire-and-forget startup.
+   */
+  coldWaitMs?: number
   /** Split models into one provider per id prefix (the part before `/`). */
   groupByPrefix?: boolean
   /** Expose each model's reasoning levels as selectable variants. */
@@ -221,9 +232,23 @@ export default Plugin.define({
       await ctx.provider.reload()
     }
 
-    // Fire and forget: setup must finish without waiting on the network, and a
-    // failed revalidation just leaves the cached catalog in place.
-    void revalidate().catch(() => {})
+    // A warm cache is already registered, so revalidation runs fire-and-forget
+    // and a failure just leaves the cached catalog in place.
+    //
+    // A cold cache has nothing to serve, so there is no staleness to trade
+    // latency against: setup holds open until the first discovery lands.
+    // Otherwise OpenCode treats the plugin as activated with an empty catalog,
+    // and a one-shot `opencode run -m cliproxyapi-.../...` resolves its model
+    // during that window and fails outright. The cap bounds the wait so an
+    // unreachable server cannot stall startup for the full discovery timeout;
+    // discovery keeps running either way and registers through `reload()`
+    // whenever it completes.
+    const first = revalidate().catch(() => {})
+    if (providers.length === 0) {
+      const cap = deadline(configured.coldWaitMs ?? DEFAULT_COLD_WAIT_MS)
+      await Promise.race([first, cap.promise])
+      cap.cancel()
+    }
 
     const refreshMs = configured.refreshMs ?? DEFAULT_REFRESH_MS
     if (refreshMs === 0) return
@@ -614,6 +639,23 @@ function readOptions(input?: Record<string, unknown>): ConnectorOptions {
         ? input.discoveryTimeoutMs
         : undefined,
     refreshMs: typeof input.refreshMs === "number" && input.refreshMs >= 0 ? input.refreshMs : undefined,
+    coldWaitMs:
+      typeof input.coldWaitMs === "number" && input.coldWaitMs >= 0 ? input.coldWaitMs : undefined,
+  }
+}
+
+/**
+ * A timer that can be awaited once and cancelled, so a discovery that beats
+ * the cap does not leave a pending timer holding the event loop open.
+ */
+function deadline(ms: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  return {
+    promise: new Promise<void>((resolve) => {
+      if (ms === 0) return resolve()
+      timer = setTimeout(resolve, ms)
+    }),
+    cancel: () => clearTimeout(timer),
   }
 }
 

@@ -17,6 +17,17 @@ and this project follows [Semantic Versioning](https://semver.org/).
   2.0.0–2.0.3 it fails to load with
   `undefined is not an object (evaluating 'ctx.provider.transform')`. Stay on
   `0.2.x` for those versions.
+- A startup with no cached catalog now waits for the first discovery before
+  handing control back to OpenCode, capped by the new `coldWaitMs` option
+  (default `3000`). Stale-while-revalidate previously returned immediately even
+  with nothing to serve, so OpenCode activated the plugin against an empty
+  catalog. Short-lived invocations such as `opencode run -m cliproxyapi-.../...`
+  failed with `Model unavailable` and exited before the discovery that would
+  have populated the cache ever completed, leaving every subsequent run equally
+  cold. A warm cache still registers immediately and revalidates in the
+  background, and discovery that outlives the cap still registers when it
+  lands.
+
 - The plugin now builds against the published `@opencode/plugin` package
   (OpenCode 2's own plugin package) instead of the `@opencode-ai/plugin`
   prerelease, so the V2 domains are properly typed.

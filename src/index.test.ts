@@ -667,6 +667,40 @@ describe("plugin setup (stale-while-revalidate)", () => {
     expect(h.variants()["cliproxyapi/kimi-k3"]).toEqual([])
   })
 
+  test("registers a cold catalog before setup returns", async () => {
+    // Without this, OpenCode activates the plugin against an empty catalog and
+    // a one-shot `opencode run -m ...` fails before discovery ever lands.
+    serve(healthy)
+    const h = makeCtx()
+
+    await plugin.setup(h.ctx)
+
+    expect(h.variants()["cliproxyapi/kimi-k3"]).toEqual(["low", "high"])
+  })
+
+  test("stops waiting on a hung server once the cold wait elapses", async () => {
+    stubFetch((() => new Promise<Response>(() => {})) as never)
+    const h = makeCtx()
+    h.ctx.options.coldWaitMs = 25
+
+    const started = Date.now()
+    await plugin.setup(h.ctx)
+
+    expect(Date.now() - started).toBeLessThan(1_000)
+  })
+
+  test("serves a warm cache without waiting for discovery", async () => {
+    const warm = (await run(healthy)).storage.get("catalog")
+    stubFetch((() => new Promise<Response>(() => {})) as never)
+    const h = makeCtx(warm)
+
+    const started = Date.now()
+    await plugin.setup(h.ctx)
+
+    expect(Date.now() - started).toBeLessThan(1_000)
+    expect(h.variants()["cliproxyapi/kimi-k3"]).toEqual(["low", "high"])
+  })
+
   test("never writes the API key into the catalog cache", async () => {
     const h = await run(healthy)
 
